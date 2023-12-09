@@ -1,0 +1,7 @@
+version: '3.8'
+services:
+  sqlite:
+    build:
+      context: db
+    volumes:
+      - ./db:/var/lib/sqlite
