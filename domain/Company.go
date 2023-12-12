@@ -47,10 +47,10 @@ type LegalEntity struct {
 		Code string `json:"Код"`
 		Text string `json:"Текст"`
 	} `json:"ОснВидДеят"`
-	Phone    string   `json:"НомТел"`
-	Email    string   `json:"E-mail"`
-	Contacts string   `json:"Контакты"`
-	Finances []string `json:"Финансы"`
+	Phone    string            `json:"НомТел"`
+	Email    string            `json:"E-mail"`
+	Contacts string            `json:"Контакты"`
+	Finances map[string]string `json:"Финансы"`
 }
 
 // type Item struct {
