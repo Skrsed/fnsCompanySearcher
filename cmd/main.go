@@ -9,30 +9,41 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"log/slog"
 
 	"github.com/Skrsed/fnsCompanySearcher/domain"
+	"github.com/spf13/viper"
 	"github.com/xuri/excelize/v2"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 const url = "https://api-fns.ru/api/multinfo"
-const secret = "548d6fa5824faed03dfd6575e2151a3455e3aee6"
+
+// example secret = "548d6fa5824faed03dfd6575e2151a3455e3aee6"
 const source = "source.xlsx"
 const result = "result.xlsx"
 const defaultSheet = "Лист1"
 const needle = "ОГРН"
 
 var needsToexit bool
+var secret string
 
 func main() {
+	fmt.Println("There is FNS searcher program. Please set the source file in root folder and enter your key...")
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	slog.Info("Reading file...")
+
 	sourceRows, err := readSource(source)
 	if err != nil {
 		slog.Error("Error while reading sorce file: " + err.Error())
@@ -65,13 +76,11 @@ func main() {
 	if err != nil {
 		slog.Error("Error while reading db cache " + err.Error())
 	}
-	//slog.Info(fmt.Sprintf("db companies: %v", cachedData))
 
 	cachedOgrns, err := dbCachedOgrns()
 	if err != nil {
 		slog.Error("Error while scanning cached ogrns result " + err.Error())
 	}
-	//slog.Info(fmt.Sprintf("cached ogrns: %v", cachedOgrns))
 
 	for _, cachedCompany := range cachedData {
 		companiesData = append(companiesData, cachedCompany)
@@ -89,7 +98,13 @@ func main() {
 		ogrns = newOgrns
 	}
 	bucket := make([]string, len(ogrns))
+
 	copy(bucket, ogrns)
+
+	slog.Info("First five would be:")
+	for i := 0; i < 5 && i < len(bucket); i++ {
+		fmt.Println(i, " ", bucket[i])
+	}
 
 	fmt.Printf("bucket data %v\n, copied from ogrns %v\n", len(bucket), len(ogrns))
 
@@ -105,6 +120,8 @@ func main() {
 	for i, chunk := range chunks {
 		groups[i/10] = append(groups[i/10], chunk)
 	}
+
+	slog.Info("Fetching api")
 
 	if !slices.Contains(os.Args, "--only-cache") {
 		for _, group := range groups {
@@ -136,6 +153,8 @@ func main() {
 	writeToFile(merged)
 
 	slog.Info(fmt.Sprintf("Done, chunks - %v, total - %v", len(chunks), len(ogrns)))
+
+	<-c
 }
 
 func dbCachedOgrns() ([]string, error) {
@@ -189,7 +208,7 @@ func mergeData(rows [][]string, companies []domain.Company) [][]string {
 
 	mergedSlice := make([][]string, 0, len(rows))
 
-	mergedSlice = append(mergedSlice, append(rows[0], "Контакты", "Финансы"))
+	mergedSlice = append(mergedSlice, append(rows[0], "Контакты", "Финансы", "ИНН", "CEO"))
 
 	for _, row := range rows[1:] {
 		company, err := findCompanyByOGRN(companies, row[needleIndex])
@@ -197,7 +216,7 @@ func mergeData(rows [][]string, companies []domain.Company) [][]string {
 			mergedSlice = append(mergedSlice, append(row, "Нет данных"))
 			continue
 		}
-		mergedSlice = append(mergedSlice, append(row, company.Contacts, company.Finances))
+		mergedSlice = append(mergedSlice, append(row, company.Contacts, company.Finances, company.INN, company.CEO))
 
 	}
 
@@ -233,7 +252,7 @@ func apiCall(ogrns []string) (domain.Response, error) {
 	}
 
 	q := req.URL.Query()
-	q.Add("key", secret)
+	q.Add("key", getSecret())
 	q.Add("req", strings.Join(ogrns, ","))
 	req.URL.RawQuery = q.Encode()
 
@@ -248,6 +267,17 @@ func apiCall(ogrns []string) (domain.Response, error) {
 	res := unmarshalResponse(contents)
 
 	return res, nil
+}
+
+func getSecret() string {
+	if secret == "" {
+		viper.SetConfigFile(".env")
+		viper.ReadInConfig()
+
+		secret = viper.GetString("API_KEY")
+	}
+
+	return secret
 }
 
 func save(companies []domain.Company) {
@@ -289,10 +319,12 @@ func setCachedOgrn(ogrn string) {
 
 func insertCompany(db *sql.DB, company domain.Company) {
 	_, err := db.Exec(
-		"INSERT OR REPLACE INTO main.Companies (ogrn, finances, contacts) VALUES (?, ?, ?)",
+		"INSERT OR REPLACE INTO main.Companies (ogrn, finances, contacts, inn, ceo) VALUES (?, ?, ?, ?, ?)",
 		company.OGRN,
 		company.Finances,
 		company.Contacts,
+		company.INN,
+		company.CEO,
 	)
 
 	if err != nil {
@@ -309,6 +341,8 @@ func convertToCompany(item domain.Item) domain.Company {
 		company = domain.Company{
 			OGRN:     item.IndividualEntrepreneur.OGRN,
 			Contacts: item.IndividualEntrepreneur.Contacts,
+			INN:      item.IndividualEntrepreneur.INN,
+			CEO:      item.IndividualEntrepreneur.FullName,
 			Finances: "",
 		}
 	case item.LegalEntity != nil:
@@ -323,6 +357,8 @@ func convertToCompany(item domain.Item) domain.Company {
 		company = domain.Company{
 			OGRN:     item.LegalEntity.OGRN,
 			Contacts: item.LegalEntity.Contacts,
+			INN:      item.LegalEntity.INN,
+			CEO:      item.LegalEntity.CEO.FullName,
 			Finances: strings.Join(result, ", "),
 		}
 	default:
@@ -341,7 +377,7 @@ func dbData(ogrns []string) ([]domain.Company, error) {
 
 	defer db.Close()
 
-	rows, err := db.Query("SELECT ogrn, contacts, finances FROM main.Companies")
+	rows, err := db.Query("SELECT ogrn, contacts, finances, inn, ceo FROM main.Companies")
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +385,13 @@ func dbData(ogrns []string) ([]domain.Company, error) {
 	companies := []domain.Company{}
 	for rows.Next() {
 		company := domain.Company{}
-		err := rows.Scan(&company.OGRN, &company.Contacts, &company.Finances)
+		err := rows.Scan(
+			&company.OGRN,
+			&company.Contacts,
+			&company.Finances,
+			&company.INN,
+			&company.CEO,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -371,7 +413,10 @@ func getApiData(ogrns []string) []domain.Company {
 		company := convertToCompany(item)
 
 		companies = append(companies, company)
-		setCachedOgrn(company.OGRN)
+	}
+	// a little dangerous
+	for _, ogrn := range ogrns {
+		setCachedOgrn(ogrn)
 	}
 
 	save(companies)

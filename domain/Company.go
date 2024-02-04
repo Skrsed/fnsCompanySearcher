@@ -64,6 +64,8 @@ type Company struct {
 	OGRN     string `json:"ОГРН"`
 	Contacts string `json:"Контакты"`
 	Finances string `json:"Финансы"`
+	INN      string `json:"ИНН"`
+	CEO      string `json:"CEO"`
 	JSONB    []byte `json:"JSONB"`
 }
 
